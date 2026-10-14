@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Vakund v-2-0</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- Include Chart.js library -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        h1 {
+            font-size: 35px;
+        }
+
+        #cpm {
+            font-size: 60px;
+            color: green;
+            margin: 20px;
+        }
+
+        #dose {
+            font-size: 30px;
+            color: blue;
+            margin: 20px;
+        }
+
+        #time {
+            margin-top: 20px;
+            color: gray;
+        }
+
+        #location {
+            margin-top: 10px;
+        }
+
+        /* Responsive container for the chart */
+        .chart-container {
+            width: 80%;
+            max-width: 800px;
+            margin: 30px auto;
+        }
+    </style>
+</head>
+
+<body>
+
+<h1>Vakund v.2.0</h1>
+
+<h2>CPM</h2>
+
+<div id="cpm">
+    Waiting...
+</div>
+
+<div id="dose"></div>
+
+<p id="time"></p>
+<p id="location"></p>
+
+<!-- Chart container and canvas element -->
+<div class="chart-container">
+    <canvas id="radiationChart"></canvas>
+</div>
+
+<script>
+const SUPABASE_URL = "https://egeeutqeihbdwgefwhhd.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVnZWV1dHFlaWhiZHdnZWZ3aGhkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUxMjA0NDYsImV4cCI6MjEwMDY5NjQ0Nn0.t8X8kJBxwOrYr0aup2vOYXiDkGs_-dO1-qPd_DdX_0g";
+
+const client = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// Global chart variable
+let radiationChart;
+
+// Initialize the blank chart structure
+function initChart() {
+    const ctx = document.getElementById('radiationChart').getContext('2d');
+    radiationChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [], // Timestamps go here
+            datasets: [{
+                label: 'Drate',
+                data: [], // CPM values go here
+                borderColor: 'rgb(75, 192, 192)',
+                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                tension: 0.2,
+                fill: true
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                x: {
+                    display: true,
+                    title: { display: true, text: 'Time' }
+                },
+                y: {
+                    display: true,
+                    title: { display: true, text: 'drate' },
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+}
+
+// Helper to format the long ISO string into a readable timestamp
+function formatTime(isoString) {
+    const date = new Date(isoString);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// ---------------------------
+// Load historical data for graph & show latest text measurement
+// ---------------------------
+async function getHistoricalAndLatest(){
+    // Fetch last 20 rows to populate the graph timeline
+    let {data, error} = await client
+        .from("geiger_telemetry")
+        .select("*")
+        .order("created_at", {ascending: false})
+        .limit(10000);
+
+    if(error){
+        console.log(error);
+        return;
+    }
+
+    if(data.length > 0){
+        // Reverse array so chronological order goes left-to-right on graph
+        const chronologicalData = data.reverse();
+
+        // 1. Update text fields with the absolute latest entry
+        const latest = chronologicalData[chronologicalData.length - 1];
+        document.getElementById("cpm").innerHTML = latest.cpm + " CPM";
+        document.getElementById("dose").innerHTML = "drate " + latest.dose ;
+        document.getElementById("time").innerHTML = "Time: " + latest.created_at;
+        // document.getElementById("location").innerHTML = "GPS: " + latest.latitude + ", " + latest.longitude;
+
+        // 2. Populate the chart vectors
+        radiationChart.data.labels = chronologicalData.map(item => formatTime(item.created_at));
+        radiationChart.data.datasets[0].data = chronologicalData.map(item => item.dose);
+        radiationChart.update();
+    } else {
+        console.log("No data found");
+    }
+}
+
+// Run initial configurations
+initChart();
+getHistoricalAndLatest();
+
+// ---------------------------
+// Realtime update
+// ---------------------------
+client
+.channel('radiation-live')
+.on(
+    'postgres_changes',
+    {
+        event:'INSERT',
+        schema:'public',
+        table:'geiger_telemetry'
+    },
+    payload => {
+        console.log(payload.new);
+
+        // Update text labels
+        document.getElementById("cpm").innerHTML = payload.new.cpm + "";
+        document.getElementById("dose").innerHTML =  "drate " + payload.new.dose;
+        document.getElementById("time").innerHTML = "Time: " + payload.new.created_at;
+        //document.getElementById("location").innerHTML = "GPS: " + payload.new.latitude + ", " + payload.new.longitude;
+
+        // Append new data to chart vectors
+        radiationChart.data.labels.push(formatTime(payload.new.created_at));
+        radiationChart.data.datasets[0].data.push(payload.new.dose);
+
+        // Cap data points array at 3000 items to prevent congestion
+        if (radiationChart.data.labels.length > 10000) {
+            radiationChart.data.labels.shift();
+            radiationChart.data.datasets[0].data.shift();
+        }
+
+        // Re-render chart animation
+        radiationChart.update();
+    }
+)
+.subscribe();
+</script>
+
+</body>
+</html>
